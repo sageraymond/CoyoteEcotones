@@ -1,0 +1,1880 @@
+setwd("C:/Users/sager/OneDrive/Desktop/school/MSc/Survey Info/Recon_Maps/TopSlopes")
+
+############################################################################
+#Load all libraries
+############################################################################
+
+library(lme4)
+library(survival)
+library(Hmisc)
+library(ggplot2)
+library(AICcmodavg)
+library(rafalib)
+library(MuMIn)
+library(MASS)
+library(pROC)
+library(car)
+library(caret)
+library(psych)
+library(dplyr)
+library(tidyr)
+library(broom)
+library(tidyverse)
+library(magrittr)
+library(irr)
+library(splitstackshape)
+library(jtools)
+library(ggstance)
+library(ggh4x)
+library(grid)
+library(gridExtra)
+library(jtools)
+library(interactions)
+library(BAMMtools)
+library(DescTools)
+library(AMR)
+library(patchwork)
+library(reshape2)
+library(AER)
+library(glmmTMB)
+library(performance)
+library(rsq)
+library(glmmTMB)
+library(ggpubr)
+library(rsq)
+library(DescTools)
+library(magick)
+library(ggh4x)
+
+############################################################################
+#Summarise Yard Contents
+############################################################################
+
+#Read in data, sort attractants into categories
+YardAll <- read.csv("YardData_All.csv")
+YardSumm <- YardAll %>%
+  mutate(Shelter = ShedAF + DeckAF) %>%
+  mutate(Curiosity = LitterChewed) %>%
+  mutate(preyhab = Branches + XmasTree + Grass + Leaves + Rounds + Rocks + 
+           RockWall + Stacked.wood + WoodRetWall + Bricks + construction.materials + 
+           concrete_waste + lumber) %>%
+  mutate(food = BirdF + Seed.on.ground + compost + pumpkins + trash.cans..bags)
+YardSumm2 <- YardSumm %>%
+  dplyr::select(Shelter,
+                Curiosity,
+                preyhab,
+                food,
+                Access)
+
+############################################################################
+#ACCESS to yards (unit of replication = YARD)
+############################################################################
+# Summarise mean and sd for attractant count between yards that were accessed
+# and those that were not accessed; include t-test results in final table
+# were not accessed (yard = unit of replication)
+YardSumm3 <- YardSumm2 %>% 
+  dplyr::group_by(Access) %>% 
+  dplyr::summarise_if(is.numeric, .funs=list(mean, sd, min, max)) %>%
+  tidyr::pivot_longer(cols = -Access, 
+                      names_to = c('.value', 'variable'), 
+                      names_sep = '_fn')
+YardSumm3$variable[YardSumm3$variable==1] <- "mean"
+YardSumm3$variable[YardSumm3$variable==2] <- "sd"
+YardSumm3$variable[YardSumm3$variable==3] <- "min"
+YardSumm3$variable[YardSumm3$variable==4] <- "max"
+YardSumm3 #table including mean, sd, min and max for attractant count 
+
+#Conduct t-tests and store results in a table
+YardSumm2$Access2 <- ifelse(YardSumm2$Access == 1, "Access", "NoAccess")
+A <- 
+  YardSumm2 %>%
+  dplyr::select(Access2, Shelter, Curiosity, preyhab, food) %>% #select quantitative variables and grouping variable (Use)
+  gather(key = variable, value = value, -Access2) %>% 
+  group_by(Access2, variable) %>% 
+  summarise(value = list(value)) %>%
+  spread(Access2, value) %>% 
+  group_by(variable) %>%
+  mutate(p_value = t.test(unlist(NoAccess), unlist(Access))$p.value,
+         t_value = t.test(unlist(NoAccess), unlist(Access))$statistic)
+AccessTresults <- A[,-c(2:3)]
+AccessTresults #table containing variable, t-stat, p-value
+
+#Create a table of summary statistics for accessed yards
+Access <- data.frame(t(dplyr::filter(YardSumm3, Access == "1")))
+colnames(Access) <- as.character(Access[2,])
+Access <- Access[-c(1:2),]
+Access <- tibble::rownames_to_column(Access, var = "variable")
+Access #summary statistics for ACCESSED yards
+
+#Create a table of summary statistics for yards that were not accessed
+NoAccess <- data.frame(t(dplyr::filter(YardSumm3, Access == "0")))
+colnames(NoAccess) <- as.character(NoAccess[2,])
+NoAccess <- NoAccess[-c(1:2),]
+NoAccess <- tibble::rownames_to_column(NoAccess, var = "variable")
+NoAccess #summary statistics for ACCESSED yards
+
+#Join access table, no access table, table of t-test results
+YardSumm4 <- AccessTresults %>%
+  left_join(Access, by = "variable") %>%
+  left_join(NoAccess, by = "variable") #x = access, y = no access
+YardSumm4 #table including summary statistics for accessed vs. not accessed yards
+
+#reorder columns
+YardSumm4 <- YardSumm4 %>%
+  select(mean.x, sd.x, min.x, max.x, mean.y, sd.y, min.y, max.y, t_value, p_value)
+
+#rename columns
+YardSumm4 <- YardSumm4 %>%
+  rename("Variable" = variable, "Mean0" = mean.y, "SD0" = sd.y, "Min0" = min.y, 
+         "Max0" = max.y, "Mean1" = mean.x, "SD1" = sd.x, "Min1" = min.x, 
+         "Max1" = max.x, "t-stat" = t_value, "p-value" = p_value)
+YardSumm4
+#write.csv(YardSumm4, file = "YardSumm4.csv")
+
+#For the one qualitative variable (fence presence/ absence), test difference
+#between accessed and non accessed yards using Fisher test
+tblAcc <- table(YardSumm$Access, YardSumm$IntactFence) 
+tblAcc
+fisher <- fisher.test(tblAcc)
+fisher # p-value < 2.2e-16
+
+#Fence was a very strong preditcor of access, so we will compare average
+#attractant abundance between accessed and non-accessed yards, using the 
+#subset of yards that were unfenced 
+unfenced <- YardSumm %>%
+  dplyr::select(Shelter,
+                Curiosity,
+                preyhab,
+                food,
+                IntactFence,
+                Access)
+unfenced <- unfenced %>%
+  dplyr::filter(IntactFence == "N") #dataframe contains only yards that were unfenced
+t.test(Shelter~Access, data = unfenced) # t = 0.0181, p = 0.9857
+t.test(Curiosity~Access, data = unfenced) # t = 2.6649, p = 0.009611
+t.test(preyhab~Access, data = unfenced) #t = 0.85233, p = 0.4054
+t.test(food~Access, data = unfenced) #t = 3.6684, p = 0.0005283
+
+#get sd for all
+unfencedAccess <- unfenced %>%
+  dplyr::filter(Access == 1)
+
+unfencedNoAccess <- unfenced %>%
+  dplyr::filter(Access != 1)
+
+sd(unfencedAccess$Shelter) #0.3729349
+sd(unfencedAccess$Curiosity) #0.5620502
+sd(unfencedAccess$preyhab) #2.562065
+sd(unfencedAccess$food) #1.684588
+
+sd(unfencedNoAccess$Shelter) #0.1018538
+sd(unfencedNoAccess$Curiosity) #0.101673
+sd(unfencedNoAccess$preyhab) #1.048932
+sd(unfencedNoAccess$food) #0.3299276
+
+############################################################################
+#ACCESS to yards (unit of replication = TRANSECT)
+############################################################################
+#Read in data for transects
+transects <- read.csv("TransectData_All.csv")
+
+#clean data and remove transect with < 10 yards
+transects <- transects%>%
+  rename("TotalHouses" = TotalHouses..excludes.houses.with.no.snow.) %>%
+  dplyr::filter(TransectName != "GRANDVIEW") %>%
+  dplyr::select(-(X))
+head(transects)
+
+#Sort attractants into categories, then create predictor variables that account
+#for effort
+transects <- transects %>%
+  mutate(IntactFence = GoodFence,
+         Shelter = ShedAF + DeckAF,
+         Curiosity = chewedLitt,
+         preyhab = Branches + XmasTree + Grass + Leaves + Rounds + RockPile + 
+           StoneWall + WoodStack + WoodRetWall + Bricks + ConstrMat + Concrete + Lumber,
+         food = BirdF + GroundSeed + Compost + Pumpkin + TrashCan.GarbageBag,
+         PercFenc = (IntactFence / TotalHouses) * 100,
+         LengthKM = Length / 1000,
+         ShelterPerKM = Shelter/ LengthKM,
+         CuriosityPerKM = Curiosity / LengthKM,
+         preyhabPerKM = preyhab/ LengthKM,
+         foodPerKM = food/ LengthKM)
+
+#remove unecessary columns
+transects <- transects%>%
+  dplyr::select(TransectName, YardsWithCALAAccess, TotalHouses,
+                Scat, PercFenc, ShelterPerKM, CuriosityPerKM, 
+                preyhabPerKM, foodPerKM, LengthKM)
+
+#Add deer (presence/ absence) to transects
+#read in data
+Deer <- read.csv("Deer.csv")
+
+#Add data to transects
+transects <- transects %>%
+  full_join(Deer, by = "TransectName")
+
+#change to type factor
+transects$DeerPres <- factor(transects$DeerPres, levels = c('N', 'Y'))
+
+###Data frame is complete; Begin modelling procedure
+#check for collinearity
+cor(transects[sapply(transects, is.numeric)], method = c("pearson"))
+#Using r < 0.6, there is no correlation
+
+# Create global model predicting ACCESS with all parameters
+options(na.action = "na.fail")
+HoodAccess <- glm(YardsWithCALAAccess~PercFenc + ShelterPerKM + 
+                    CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                  offset = log(TotalHouses), family = poisson, data = transects)
+#check overdispersion of global model
+check_overdispersion(HoodAccess, trafo = 1) #dispersion ratio = 0.855, p = 0.593, OD not detected
+
+#dredge model
+HoodAccessResults<-dredge(HoodAccess, m.lim = c(0, 2), extra = c("R^2", F = function(x)
+  summary(x)$fstatistic[[1]]))
+subset(HoodAccessResults)#, delta < 2) #results in two models within 2 AICc
+
+#Get the top models
+transaccmod1 <- get.models(HoodAccessResults, 1)[[1]]
+transaccmod1$call
+transaccmod1 <- glm(formula = YardsWithCALAAccess ~ PercFenc + 1, family = poisson, 
+                    data = transects, offset = log(TotalHouses))
+
+transaccmod2 <- get.models(HoodAccessResults, 2)[[1]]
+transaccmod2$call
+transaccmod2 <- glm(formula = YardsWithCALAAccess ~ PercFenc + ShelterPerKM + 
+                      1, family = poisson, data = transects, offset = log(TotalHouses))
+
+#get beta coefficients, p-values, confidence intervals for models (not scaled)
+summ(transaccmod1, confint = TRUE, digits = 4)
+summ(transaccmod2, confint = TRUE, digits = 4)
+
+#get scaled beta coefficients, confidence intervals, 
+transects$SPercFenc <- scale(transects$PercFenc, scale = TRUE, center = TRUE)
+transects$SShelterPerKM <- scale(transects$ShelterPerKM, scale = TRUE, center = TRUE)
+Stransaccmod1 <- glm(YardsWithCALAAccess ~ SPercFenc, family = poisson, 
+                     data = transects, offset = log(TotalHouses))
+Stransaccmod2 <- glm(YardsWithCALAAccess ~ SPercFenc + SShelterPerKM,
+                     family = poisson, data = transects, offset = log(TotalHouses))
+
+#Average models
+TransAccAvg <- model.avg(transaccmod1, transaccmod2)
+STransAccAvg <- model.avg(Stransaccmod1, Stransaccmod2)
+
+#get beta coefficient, CIs for averaged models
+summary(STransAccAvg)
+confint(STransAccAvg, subset = TRUE)
+
+summ(Stransaccmod1, confint = TRUE, digits = 4)
+summ(Stransaccmod2, confint = TRUE, digits = 4)
+
+#get rate ratio and confidence intervals
+exp(TransAccAvg$coefficients)
+exp(confint(TransAccAvg, subset = TRUE))
+
+#get Nagelkerke and McFadden r2
+PseudoR2(transaccmod1, which = 'Nagelkerke') # 0.8530545   
+PseudoR2(transaccmod2, which = 'Nagelkerke') # 0.8599726  
+PseudoR2(transaccmod1, which = 'McFadden') # 0.2995413 
+PseudoR2(transaccmod2, which = 'McFadden') # 0.3070233  
+
+#create null; then compare to null
+AccNull <- glm(YardsWithCALAAccess ~ 1,
+               family = poisson, data = transects, offset = log(TotalHouses))
+anova(AccNull, transaccmod1, test = "Chisq") # p = 1.737e-09; better than null
+anova(AccNull, transaccmod2, test = "Chisq") # p = 8.555e-09; better than null
+
+#Confirm absence of overdispersion
+check_overdispersion(transaccmod1, trafo = 1) # dispersion ratio 0.661; p = 0.844, no OD detected
+check_overdispersion(transaccmod2, trafo = 1) # dispersion ratio 0.679; p = 0.818, no OD detected
+
+#check for colinearity in model with two variables
+check_collinearity(transaccmod2) # max VIF = 1.20; no concerns with colinearity
+
+
+############################################################################
+#SCAT DISTANCE (unit of replication = YARD)
+############################################################################
+#Read in Data
+#Distance to nearest scat
+ScatDist <- read.csv("YardScatDist.csv")
+ScatDist <- ScatDist %>%
+  dplyr::select(NBHD, ACCESS, Scat_Dist, Scat_Dist2)
+
+#Begin with simple t-test comparing accessed and non-accessed yards
+t.test(ScatDist$Scat_Dist~ScatDist$ACCESS) # t = 4.676, p = 3.836e-06
+
+############################################################################
+#SCAT ABUNDANCE (unit of replication = TRANSECT)
+############################################################################
+#Import Scat Count/ transect (with diet info)
+Scat <- read.csv("ScatJul14.csv")
+
+#Make New datafrane with scat information + transect data
+ScatTrans <- transects %>%
+  full_join(Scat, by = "TransectName") %>%
+  dplyr::select(TransectName, TotalHouses, YardsWithCALAAccess, LengthKM, PercFenc,
+                ShelterPerKM, CuriosityPerKM, preyhabPerKM, foodPerKM, 
+                DeerPres, ScatCount, Seed, AnthroORGarbage, AnthroORSeedORGarbage)
+
+#Add access to yards as a predictor (convert to an average)
+ScatTrans <- ScatTrans %>%
+  dplyr::mutate(PercAccess = (YardsWithCALAAccess / TotalHouses) * 100)
+
+#Develop global model
+HoodScatP <- glm(ScatCount~PercFenc + ShelterPerKM + CuriosityPerKM + 
+                   preyhabPerKM + foodPerKM + DeerPres + PercAccess, 
+                 offset = log(LengthKM), data = ScatTrans, family = poisson)
+
+#check overdispersion in global model
+check_overdispersion(HoodScatP) # dispersion ratio = 8.861, p < 0.001; OD detected
+
+#Create global model using negative binomial distirbution
+HoodScatN <- glm.nb(ScatCount~PercFenc + ShelterPerKM + CuriosityPerKM + 
+                      preyhabPerKM + foodPerKM + DeerPres + PercAccess + 
+                      offset(log(LengthKM)), data = ScatTrans)
+#check overdispersion
+check_overdispersion(HoodScatN) #dispersion ratio = 1.140, p = 0.324; OD not detected
+
+#remove NA values
+ScatTrans$AnthroORGarbage[is.na(ScatTrans$AnthroORGarbage)] <- 0
+
+#Check correlation of predictors with focus on PercAccess (which was not previously assessed)
+cor(ScatTrans[sapply(ScatTrans, is.numeric)], method = c("pearson"))
+#there is correlation between PercFenc and PercAccess and PercAccess and preyhabperKM
+
+HoodScatResults<-dredge(HoodScatN, subset = !((PercFenc && PercAccess)+ (PercAccess && preyhabPerKM)),
+                        m.lim = c(1, 2), extra = c("R^2", F = function(x)
+                          summary(x)$fstatistic[[1]]))
+HoodScatResults
+
+#One model within 2 AICc
+Scatmod1 <- glm.nb(formula = ScatCount ~ DeerPres + offset(log(LengthKM)) + 
+                     1, data = ScatTrans, link = log)
+
+#Get standardized beta coefficients, p-values, confidence intervals
+summ(Scatmod1, confint = TRUE, digits = 4)
+
+#determine rate ratio
+summ(Scatmod1, confint = TRUE, digits = 4, exp = TRUE)
+
+#get pseudo r2 
+PseudoR2(Scatmod1, which = "Nagelkerke") #0.1757724   
+PseudoR2(Scatmod1, which = "McFadden") #0.02865891   
+
+#compare to null
+#create null
+ScatNull <- glm.nb(ScatCount ~ 1 + offset(log(LengthKM)), data = ScatTrans)
+anova(ScatNull, Scatmod1, test = "Chisq") # p = 0.05546492
+
+#check for overdispersion
+check_overdispersion(Scatmod1) # dispersion ratio = 1.092, p = 0.354
+
+
+############################################################################
+#SCAT ABUNDANCE--CONTENT
+############################################################################
+#Summarise the number of scats with different content
+sum(ScatTrans$Seed) # 64
+sum(ScatTrans$Seed) / 192 #33.3%
+
+sum(ScatTrans$AnthroORSeedORGarbage) # 130
+sum(ScatTrans$AnthroORSeedORGarbage) / 192 #67.7%
+
+sum(ScatTrans$AnthroORGarbage) # 82
+sum(ScatTrans$AnthroORGarbage) / 192 #42.7%
+
+#Develop a global model with number of scats containing anthro or garbage or seed as the response 
+HoodScatP.AS <- glm(AnthroORSeedORGarbage~PercFenc + ShelterPerKM + CuriosityPerKM +
+                      preyhabPerKM + foodPerKM + DeerPres + PercAccess,
+                    offset = log(LengthKM), data = ScatTrans, family = poisson)
+#check overdispersion
+check_overdispersion(HoodScatP.AS) #dispersion ratio = 8.943, p < 0.001; OD detected
+
+#Develop global model using negative binomial distribution
+HoodScatN.AS <- glm.nb(AnthroORSeedORGarbage~PercFenc + ShelterPerKM + CuriosityPerKM +
+                         preyhabPerKM + foodPerKM + DeerPres + PercAccess + 
+                         offset(log(LengthKM)), data = ScatTrans)
+#check overdispersion
+check_overdispersion(HoodScatN.AS) #dispersion ratio = .055, p = 0.394, no OD detected
+
+HoodScatResults.AS<-dredge(HoodScatN.AS, 
+                           subset = !((PercFenc && PercAccess)+ (PercAccess && preyhabPerKM)),
+                           m.lim = c(1, 2), extra = c("R^2", F = function(x) summary(x)$fstatistic[[1]]))
+HoodScatResults.AS
+#this approach results in 1 model within 2 AICc
+ASScatMod1 <- glm.nb(formula = AnthroORSeedORGarbage ~ DeerPres + offset(log(LengthKM)),
+                    data = ScatTrans, link = log)
+
+
+#get scaled beta coefficients, p values, beta confidence intervals
+summ(ASScatMod1, digits = 4, scale = TRUE, confint = TRUE)
+
+#get rate ratio and confidence intervals
+summ(ASScatMod1, digits = 4, confint = TRUE, exp = TRUE)
+
+#get pseudo r squared values
+PseudoR2(ASScatMod1, which = "Nagelkerke") #0.2809006   
+PseudoR2(ASScatMod1, which = "McFadden") #0.05438781   
+
+#develop null model and compare to null model
+ASScatNull <- glm.nb(AnthroORSeedORGarbage ~ 1 + offset(log(LengthKM)),
+                     data = ScatTrans)
+anova(ASScatMod1, ASScatNull) #p = 0.01243478
+
+
+############################################################################
+#REPORTS of interactions with coyotes
+############################################################################
+#read in data
+Reports <- read.csv("TransectReports.csv")
+head(Reports)
+
+#clean data
+Reports <- Reports %>%
+  dplyr::filter(Name != " ")
+Reports <- Reports%>%
+  dplyr::select(HumanActiv, CoyoteResp, HumanPerce,
+                Health, Name)
+
+#Create data frames containing the count of each response variable: 
+#response variable = Total Number of Reports
+TotalReports <- Reports %>%
+  group_by(Name) %>%
+  summarise(n())
+TotalReports
+
+#response variable = Human context (will use this to develop count of Reports in Home/ Yard)
+Activity <- Reports %>%
+  group_by(Name, HumanActiv) %>%
+  summarise(n())
+Activity <- dcast(Activity, Name ~ HumanActiv, fun.aggregate = sum)
+Activity
+
+#response variable = coyote behaviour (will use this to develop count of conflict reports)
+CoyResp <- Reports %>%
+  group_by(Name, CoyoteResp) %>%
+  summarise(n())
+CoyResp <- dcast(CoyResp, Name ~ CoyoteResp, fun.aggregate = sum)
+CoyResp
+
+#Response variable = Human perception (will use this to develop number of negative perception reports)
+HumanPerc <- Reports %>%
+  group_by(Name, HumanPerce) %>%
+  summarise(n())
+HumanPerc <- dcast(HumanPerc, Name ~ HumanPerce, fun.aggregate = sum)
+HumanPerc
+
+#Response variable = Coyote health (will use this to develop number of unhealthy animal reports)
+CoyHealth <- Reports %>%
+  group_by(Name, Health) %>%
+  summarise(n())
+CoyHealth <- dcast(CoyHealth, Name ~ Health, fun.aggregate = sum)
+CoyHealth
+
+#Read in csv with size of each transect area
+Area <- read.csv("TransectArea.csv")
+
+#join data into one dataframe
+ReportSumm <- TotalReports %>%
+  full_join(Area, by= "Name") %>%
+  full_join(Activity, by = "Name") %>%
+  full_join(CoyResp, by = "Name") %>%
+  full_join(HumanPerc, by = "Name") %>%
+  full_join(CoyHealth, by = "Name")
+
+str(ReportSumm)
+#rename columns
+ReportSumm <- ReportSumm %>%
+  rename("TotalReports" = "n()") %>%
+  rename("Resp0" = "0") %>%
+  rename("Resp1" = "1") %>%
+  rename("Resp2" = "2") %>%
+  rename("Resp3" = "3") %>%
+  rename("Resp4" = "4") %>%
+  rename("Resp5" = "5") %>%
+  rename("Resp6" = "6") %>%
+  rename("Resp7" = "7") %>%
+  rename("Resp8" = "8") %>%
+  rename("Resp9" = "9")
+
+#create new variables
+ReportSumm <- ReportSumm %>%
+  mutate(ReportsPerArea = TotalReports / Area,
+         KnownAct = Cycling + Driving + HomeYard + OutdoorAct,
+         YardPerArea = HomeYard / Area,
+         KnownResp = Resp0 + Resp1 + Resp2 + Resp3 + Resp4 + Resp5 + Resp6 + Resp7 + Resp8 + Resp9,
+         Conflict = Resp6 + Resp7 + Resp8 + Resp9,
+         ConflictPerArea = Conflict / Area,
+         KnownPerc = Concern + Negative + Neutral + Positive,
+         NegPerc = Concern + Negative,
+         NegativePerArea = NegPerc / Area,
+         KnownHealth = Dead + Healthy + Unhealthy,
+         NotHealthy = Dead + Unhealthy,
+         UnhealthPerArea = NotHealthy / Area)
+
+#remove irrelevant variables
+ReportSumm <- ReportSumm%>%
+  dplyr::select(Name,
+                TotalReports,
+                HomeYard,
+                Conflict,
+                NegPerc,
+                NotHealthy,
+                ReportsPerArea,
+                ConflictPerArea,
+                NegativePerArea,
+                UnhealthPerArea,
+                YardPerArea,
+                Area)
+
+#To add transect data to reports dataframe, first consolidate transects where buffer areas overlapped
+transects2 <- read.csv("TransectData_All.csv")
+transects2 <- transects2%>%
+  rename("TotalHouses" = TotalHouses..excludes.houses.with.no.snow.) %>%
+  dplyr::filter(TransectName != "GRANDVIEW") %>%
+  dplyr::select(-(X))
+head(transects2)
+#remove quantitative variable
+transects3 <- transects2 %>%
+  dplyr::select(-(TransectName))
+#Add row contents for rows that need to be combined based on proximity
+transects3[20,]<-transects3[5,]+transects3[18,]
+transects3[21,]<-transects3[7,]+transects3[15,]
+transects3[22,]<-transects3[3,]+transects3[6,]
+transects3
+transects3 <- transects3[c(20:22),]
+transects3
+transects3$TransectName <- c("STRATHCONA2", "PARKVIEW", "PATRICIAHEIGHTS")
+
+transects2 <- rbind(transects2, transects3)
+transects2 <- transects2[-c(3,5,6,7,15,18),]
+
+transects2 <- transects2 %>%
+  mutate(LengthKM = Length / 1000,
+         PercAccess = (YardsWithCALAAccess / TotalHouses) * 100,
+         ScatsPerKM = Scat / LengthKM,
+         IntactFence = GoodFence,
+         Shelter = ShedAF + DeckAF,
+         Curiosity = chewedLitt,
+         preyhab = Branches + XmasTree + Grass + Leaves + Rounds + RockPile + StoneWall + WoodStack + WoodRetWall + Bricks + ConstrMat + Concrete + Lumber,
+         food = BirdF + GroundSeed + Compost + Pumpkin + TrashCan.GarbageBag,
+         PercFenc = (IntactFence / TotalHouses) * 100,
+         ShelterPerKM = Shelter/ LengthKM,
+         CuriosityPerKM = Curiosity / LengthKM,
+         preyhabPerKM = preyhab/ LengthKM,
+         foodPerKM = food/ LengthKM)
+
+transects2 <- transects2%>%
+  dplyr::select(TransectName, TotalHouses, YardsWithCALAAccess,
+                Scat, PercAccess, ScatsPerKM, IntactFence,
+                Shelter, Curiosity, preyhab, food, PercFenc,
+                ShelterPerKM, CuriosityPerKM, preyhabPerKM,
+                foodPerKM) %>%
+  rename(Name = TransectName)
+
+#Combine transect data and reports data in one dataframe
+ReportsData <- transects2%>%
+  full_join(ReportSumm, by = "Name")
+ReportsData
+
+#Add information about Deer presence/ absence to dataframe
+Deer2 <- read.csv("Deer2.csv")
+ReportsData <- ReportsData %>%
+  full_join(Deer2, by = "Name")
+
+#determine count of each response variable
+sum(ReportsData$TotalReports) # 618
+
+sum(ReportsData$HomeYard) # 132
+sum(ReportsData$HomeYard) / 618 # 21.4%
+
+sum(ReportsData$Conflict) # 71
+sum(ReportsData$Conflict) / 618 #11.5%
+
+sum(ReportsData$NegPerc) # 33
+sum(ReportsData$NegPerc) / 618 #5.3%
+
+sum(ReportsData$NotHealthy) # 46
+sum(ReportsData$NotHealthy) / 618 #7.4%
+
+#Add scaled/ centered variable for all quantitative variables; this will come
+#in handy when developing plot_summ figures using glm.nb objects
+ReportsData$SpreyhabPerKM <- scale(ReportsData$preyhabPerKM, scale = TRUE, center = TRUE)
+ReportsData$SPercAccess <- scale(ReportsData$PercAccess, scale = TRUE, center = TRUE)
+ReportsData$SPercFenc <- scale(ReportsData$PercFenc, scale = TRUE, center = TRUE)
+ReportsData$SfoodperKM <- scale(ReportsData$foodPerKM, scale = TRUE, center = TRUE)
+ReportsData$SShelterPerKM <- scale(ReportsData$ShelterPerKM, scale = TRUE, center = TRUE)
+ReportsData$SCuriosityPerKM <- scale(ReportsData$CuriosityPerKM, scale = TRUE, center = TRUE)
+
+###Begin modelling
+##Response variable = total reports
+# Develop Global Model
+TotRepPmod1<-glm(TotalReports~ PercAccess + PercFenc  + ShelterPerKM +  
+                   CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                 offset = log(Area), data = ReportsData, family = poisson)
+#Check overdispersion
+check_overdispersion(TotRepPmod1) #dispersion ratio = 5.916, p < 0.001, OD detected 
+
+#Develop global model using NB distribution
+TotRepNBmod1<-glm.nb(TotalReports~ PercAccess + PercFenc  + ShelterPerKM +  
+                       CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                       offset(log(Area)), data = ReportsData, maxit = 100)
+#check overdispersion
+check_overdispersion(TotRepNBmod1) #dispersion ratio = 1.912, p = 0.052,; No OD detected 
+
+#Create univariate models for each variable
+TotRepMod1 <- glm.nb(TotalReports~PercAccess +offset(log(Area)), data = ReportsData)
+TotRepMod2 <- glm.nb(TotalReports~PercFenc +offset(log(Area)), data = ReportsData)
+TotRepMod3 <- glm.nb(TotalReports~ShelterPerKM +offset(log(Area)), data = ReportsData)
+TotRepMod4 <- glm.nb(TotalReports~CuriosityPerKM +offset(log(Area)), data = ReportsData)
+TotRepMod5 <- glm.nb(TotalReports~preyhabPerKM +offset(log(Area)), data = ReportsData)
+TotRepMod6 <- glm.nb(TotalReports~foodPerKM +offset(log(Area)), data = ReportsData)
+TotRepMod7 <- glm.nb(TotalReports~DeerPres +offset(log(Area)), data = ReportsData)
+
+AIC(TotRepMod1) #132.6153
+AIC(TotRepMod2) #133.2739
+AIC(TotRepMod3) #131.2607 Second model suggests shelter increases reports
+AIC(TotRepMod4) #134.213
+AIC(TotRepMod5) #132.6676
+AIC(TotRepMod6) #134.0549
+AIC(TotRepMod7) #129.8382; top model (only model within 2 AIC) suggests deer is
+#biggest predictor of total reports 
+
+#get beta coefficient, p values, confidence intervals
+STotRepMod3 <- glm.nb(TotalReports~SShelterPerKM +offset(log(Area)), data = ReportsData)
+
+summ(TotRepMod7, digits = 4, confint = TRUE)
+summ(STotRepMod3, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(TotRepMod7, digits = 4, confint = TRUE, exp = TRUE)
+summ(TotRepMod3, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(TotRepMod7, which = "Nagelkerke") #0.2414852
+PseudoR2(TotRepMod7, which = "McFadden") #0.03446631
+
+PseudoR2(TotRepMod3, which = "Nagelkerke") #0.1709259 
+PseudoR2(TotRepMod3, which = "McFadden") #0.02337496 
+
+
+#Create null and compare to null
+TotRepNull <- glm.nb(TotalReports~1 +offset(log(Area)), data = ReportsData)
+anova(TotRepNull, TotRepMod7) # p = 0.03550743
+anova(TotRepNull, TotRepMod3) # p = 0.08336514
+
+
+##Response variable = reports in home/ yard
+# Develop Global Model
+YardRepPMod<-glm(HomeYard~ PercAccess + PercFenc  + ShelterPerKM +  
+                   CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres,
+                 offset = log(Area), data = ReportsData, family = poisson)
+#check overdispersion
+check_overdispersion(YardRepPMod) #dispersion ratio = 2.684, p = 0.006, OD detected 
+
+#Develop global model using NB distribution
+YardRepNBMod<-glm.nb(HomeYard~ PercAccess + PercFenc  + ShelterPerKM +  
+                       CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                       offset(log(Area)), data = ReportsData, maxit = 1000)
+#check overdispersion
+check_overdispersion(YardRepNBMod) #dispersion ratio = 1.722, p = 0.088; No OD detected 
+
+#Create univariate models for each variable
+YardRepMod1 <- glm.nb(HomeYard~PercAccess +offset(log(Area)), data = ReportsData)
+YardRepMod2 <- glm.nb(HomeYard~PercFenc +offset(log(Area)), data = ReportsData)
+YardRepMod3 <- glm.nb(HomeYard~ShelterPerKM +offset(log(Area)), data = ReportsData)
+YardRepMod4 <- glm.nb(HomeYard~CuriosityPerKM +offset(log(Area)), data = ReportsData)
+YardRepMod5 <- glm.nb(HomeYard~preyhabPerKM +offset(log(Area)), data = ReportsData)
+YardRepMod6 <- glm.nb(HomeYard~foodPerKM +offset(log(Area)), data = ReportsData)
+YardRepMod7 <- glm.nb(HomeYard~DeerPres +offset(log(Area)), data = ReportsData)
+
+AIC(YardRepMod1) #91.71078; second model = Access
+AIC(YardRepMod2) #92.55105; fourth model = Fence
+AIC(YardRepMod3) #93.46527
+AIC(YardRepMod4) #93.6732
+AIC(YardRepMod5) #90.64649; top model = preyhab  
+AIC(YardRepMod6) #93.21517
+AIC(YardRepMod7) #92.40577; third model = deer
+
+#get beta coefficient, p values, confidence intervals
+S.YardRepMod1 <- glm.nb(HomeYard~SPercAccess +offset(log(Area)), data = ReportsData)
+S.YardRepMod2 <- glm.nb(HomeYard~SPercFenc +offset(log(Area)), data = ReportsData)
+S.YardRepMod5 <- glm.nb(HomeYard~SpreyhabPerKM +offset(log(Area)), data = ReportsData)
+
+summ(S.YardRepMod5, digits = 4, confint = TRUE)
+summ(S.YardRepMod1, digits = 4, confint = TRUE)
+summ(YardRepMod7, digits = 4, confint = TRUE)
+summ(S.YardRepMod2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(YardRepMod5, digits = 4, confint = TRUE, exp = TRUE)
+summ(YardRepMod1, digits = 4, confint = TRUE, exp = TRUE)
+summ(YardRepMod7, digits = 4, confint = TRUE, exp = TRUE)
+summ(YardRepMod2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(YardRepMod5, which = "Nagelkerke") #0.1899115  
+PseudoR2(YardRepMod1, which = "Nagelkerke") #0.133911 
+PseudoR2(YardRepMod7, which = "Nagelkerke") #0.09527986  
+PseudoR2(YardRepMod2, which = "Nagelkerke") #0.08699018 
+
+PseudoR2(YardRepMod5, which = "McFadden") #0.03811853   
+PseudoR2(YardRepMod1, which = "McFadden") #0.02602444   
+PseudoR2(YardRepMod7, which = "McFadden") #0.01812696  
+PseudoR2(YardRepMod2, which = "McFadden") #0.01647607  
+
+#Create null and compare to null
+YardRepNull <- glm.nb(HomeYard~1 +offset(log(Area)), data = ReportsData)
+anova(YardRepNull, YardRepMod5) # p = 0.06702289
+anova(YardRepNull, YardRepMod1) # p = 0.1301952
+anova(YardRepNull, YardRepMod7) # p = 0.2065863
+anova(YardRepNull, YardRepMod2) # p = 0.2285424
+
+
+##Response variable = Conflict reports
+# Develop Global Model
+ConfRepPMod<-glm(Conflict~ PercAccess + PercFenc  + ShelterPerKM +  
+                   CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres,
+                 offset = log(Area), data = ReportsData, family = poisson)
+#check overdispersion
+check_overdispersion(ConfRepPMod) #dispersion ratio = 2.693, p = 0.006, OD detected
+
+#create global model using negative binomial distribution
+ConfRepNBMod <- glm.nb(Conflict~ PercAccess + PercFenc  + ShelterPerKM +  
+                         CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                         offset(log(Area)), data = ReportsData, maxit = 110)
+check_overdispersion(ConfRepNBMod) #dispersion ratio =  2.693; p = 0.006
+
+#Creat univariate models for each variable
+ConfRepMod1 <- glm.nb(Conflict~PercAccess +offset(log(Area)), data = ReportsData)
+ConfRepMod2 <- glm.nb(Conflict~PercFenc +offset(log(Area)), data = ReportsData)
+ConfRepMod3 <- glm.nb(Conflict~ShelterPerKM +offset(log(Area)), data = ReportsData)
+ConfRepMod4 <- glm.nb(Conflict~CuriosityPerKM +offset(log(Area)), data = ReportsData)
+ConfRepMod5 <- glm.nb(Conflict~preyhabPerKM +offset(log(Area)), data = ReportsData)
+ConfRepMod6 <- glm.nb(Conflict~foodPerKM +offset(log(Area)), data = ReportsData)
+ConfRepMod7 <- glm.nb(Conflict~DeerPres +offset(log(Area)), data = ReportsData)
+
+AIC(ConfRepMod1) #80.84386; second model = access
+AIC(ConfRepMod2) #80.89626 ; third model = fence
+AIC(ConfRepMod3) #80.54082; top model = shelter
+AIC(ConfRepMod4) #82.56524
+AIC(ConfRepMod5) #84.80121
+AIC(ConfRepMod6) #82.70242
+AIC(ConfRepMod7) #83.88383
+
+#get beta coefficient, p values, confidence intervals
+S.ConfRepMod1 <- glm.nb(Conflict~SPercAccess +offset(log(Area)), data = ReportsData)
+S.ConfRepMod2 <- glm.nb(Conflict~SPercFenc +offset(log(Area)), data = ReportsData)
+S.ConfRepMod3 <- glm.nb(Conflict~SShelterPerKM +offset(log(Area)), data = ReportsData)
+
+summ(S.ConfRepMod3, digits = 4, confint = TRUE)
+summ(S.ConfRepMod1, digits = 4, confint = TRUE)
+summ(S.ConfRepMod2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(ConfRepMod3, digits = 4, confint = TRUE, exp = TRUE)
+summ(ConfRepMod1, digits = 4, confint = TRUE, exp = TRUE)
+summ(ConfRepMod2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(ConfRepMod3, which = "Nagelkerke") #0.2648723   
+PseudoR2(ConfRepMod1, which = "Nagelkerke") #0.2506822   
+PseudoR2(ConfRepMod2, which = "Nagelkerke") #0.2482007   
+
+PseudoR2(ConfRepMod3, which = "McFadden") #0.06148218   
+PseudoR2(ConfRepMod1, which = "McFadden") #0.05766681   
+PseudoR2(ConfRepMod2, which = "McFadden") #0.05700696   
+
+#Create null and compare to null
+ConfRepNull <- glm.nb(Conflict~1 +offset(log(Area)), data = ReportsData)
+anova(ConfRepNull, ConfRepMod3) # p = 0.02711993
+anova(ConfRepNull, ConfRepMod1) # p = 0.03234481
+anova(ConfRepNull, ConfRepMod2) # p = 0.03335003
+
+
+
+##Response variable = Negative Perception reports
+# Develop Global Model
+NegPercPMod<-glm(NegPerc~ PercAccess + PercFenc  + ShelterPerKM +  
+                   CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                 offset = log(Area), data = ReportsData, family = poisson)
+#check overdispersion
+check_overdispersion(NegPercPMod) #dispersion ratio = 2.007, p = 0.042, OD detected
+
+#develop global model using negative binomial distribution
+NegPercNBMod <- glm.nb(NegPerc~ PercAccess + PercFenc  + ShelterPerKM +  
+                         CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres +
+                         offset(log(Area)), data = ReportsData, maxit = 1000)
+#Check overdispersion
+check_overdispersion(NegPercNBMod) #dispersion ratio =  2.212, p = 0.024; OD detected
+
+NegPercRepMod1 <- glm.nb(NegPerc~PercAccess +offset(log(Area)), data = ReportsData, maxit = 100)
+NegPercRepMod2 <- glm.nb(NegPerc~PercFenc +offset(log(Area)), data = ReportsData)
+NegPercRepMod3 <- glm.nb(NegPerc~ShelterPerKM +offset(log(Area)), data = ReportsData)
+NegPercRepMod4 <- glm.nb(NegPerc~CuriosityPerKM +offset(log(Area)), data = ReportsData)
+NegPercRepMod5 <- glm.nb(NegPerc~preyhabPerKM +offset(log(Area)), data = ReportsData, maxit = 100)
+NegPercRepMod6 <- glm.nb(NegPerc~foodPerKM +offset(log(Area)), data = ReportsData)
+NegPercRepMod7 <- glm.nb(NegPerc~DeerPres +offset(log(Area)), data = ReportsData)
+
+AIC(NegPercRepMod1) #62.50572; third mod = Accesd
+AIC(NegPercRepMod2) #62.18036; second mod = fences
+AIC(NegPercRepMod3) #63.43664; fifth mod = shelter
+AIC(NegPercRepMod4) #61.93796; best mod = curiosity
+AIC(NegPercRepMod5) #62.79902; fourth mod = preyhab
+AIC(NegPercRepMod6) #64.56096
+AIC(NegPercRepMod7) #64.88855
+
+#get beta coefficient, p values, confidence intervals
+S.NegPercRepMod1 <- glm.nb(NegPerc~SPercAccess +offset(log(Area)), data = ReportsData, maxit = 100)
+S.NegPercRepMod2 <- glm.nb(NegPerc~SPercFenc +offset(log(Area)), data = ReportsData)
+S.NegPercRepMod3 <- glm.nb(NegPerc~SShelterPerKM +offset(log(Area)), data = ReportsData)
+S.NegPercRepMod4 <- glm.nb(NegPerc~SCuriosityPerKM +offset(log(Area)), data = ReportsData)
+S.NegPercRepMod5 <- glm.nb(NegPerc~SpreyhabPerKM +offset(log(Area)), data = ReportsData, maxit = 100)
+
+summ(S.NegPercRepMod4, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod2, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod1, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod5, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod3, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(NegPercRepMod4, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod2, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod1, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod5, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod3, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(NegPercRepMod4, which = "Nagelkerke") #0.1735529     
+PseudoR2(NegPercRepMod2, which = "Nagelkerke") #0.1605429     
+PseudoR2(NegPercRepMod1, which = "Nagelkerke") #0.1427668     
+PseudoR2(NegPercRepMod5, which = "Nagelkerke") #0.1264297     
+PseudoR2(NegPercRepMod3, which = "Nagelkerke") #0.08986323     
+
+PseudoR2(NegPercRepMod4, which = "McFadden") #0.05034523      
+PseudoR2(NegPercRepMod2, which = "McFadden") #0.04623013      
+PseudoR2(NegPercRepMod1, which = "McFadden") #0.04070646      
+PseudoR2(NegPercRepMod5, which = "McFadden") #0.03572712      
+PseudoR2(NegPercRepMod3, which = "McFadden") #0.02490223      
+
+#Create null and compare to null
+NegPercRepNull <- glm.nb(NegPerc~1 +offset(log(Area)), data = ReportsData)
+anova(NegPercRepNull, NegPercRepMod4) # p = 0.08505769
+anova(NegPercRepNull, NegPercRepMod2) # p = 0.09890482
+anova(NegPercRepNull, NegPercRepMod1) # p = 0.1215098
+anova(NegPercRepNull, NegPercRepMod5) # p = 0.146871
+anova(NegPercRepNull, NegPercRepMod3) # p = 0.2258469
+
+
+##Response variable = Reports of Unhealthy Animals
+# Develop Global Model
+UnhealthyPMod<-glm(NotHealthy~ PercAccess + PercFenc  + ShelterPerKM +  
+                     CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                   offset = log(Area), data = ReportsData, family = poisson)
+#check overdispersion
+check_overdispersion(UnhealthyPMod) # distribution ratio = 2.319, p < 0.001; OD detected
+
+# Develop Global Model using NB distribution
+UnhealthyNBMod<-glm.nb(NotHealthy~ PercAccess + PercFenc  + ShelterPerKM +  
+                         CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                         offset(log(Area)), data = ReportsData, maxit = 100)
+#check overdispersion
+check_overdispersion(UnhealthyNBMod) # distribution ratio = 1.179, p < 0.307; OD not detected
+
+UnhealthyRepMod1 <- glm.nb(NotHealthy~PercAccess + offset(log(Area)), data = ReportsData, maxit = 100)
+UnhealthyRepMod2 <- glm.nb(NotHealthy~PercFenc + offset(log(Area)), data = ReportsData, maxit = 1000000)
+UnhealthyRepMod3 <- glm.nb(NotHealthy~ShelterPerKM + offset(log(Area)), data = ReportsData, maxit = 100)
+UnhealthyRepMod4 <- glm.nb(NotHealthy~CuriosityPerKM + offset(log(Area)), data = ReportsData, maxit = 1000)
+UnhealthyRepMod5 <- glm.nb(NotHealthy~preyhabPerKM + offset(log(Area)), data = ReportsData, maxit = 1000)
+UnhealthyRepMod6 <- glm.nb(NotHealthy~foodPerKM + offset(log(Area)), data = ReportsData, maxit = 100)
+UnhealthyRepMod7 <- glm.nb(NotHealthy~DeerPres + offset(log(Area)), data = ReportsData, maxit = 1000000)
+
+AIC(UnhealthyRepMod1) #107.1323
+AIC(UnhealthyRepMod2) #107.2333
+AIC(UnhealthyRepMod3) #58.78955; first and only model
+AIC(UnhealthyRepMod4) #101
+AIC(UnhealthyRepMod5) #101.0176
+AIC(UnhealthyRepMod6) #107.7366
+AIC(UnhealthyRepMod7) #108
+
+#get beta coefficient, p values, confidence intervals
+S.UnhealthyRepMod3 <- glm.nb(NotHealthy~SShelterPerKM + offset(log(Area)), data = ReportsData, maxit = 100)
+summ(S.UnhealthyRepMod3, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(UnhealthyRepMod3, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(UnhealthyRepMod3, which = "Nagelkerke") #0.1753039      
+PseudoR2(UnhealthyRepMod3, which = "McFadden") #0.053434  
+
+#Create null and compare to null
+UnhealthyRepNull <- glm.nb(NotHealthy~1 +offset(log(Area)), data = ReportsData, maxit = 1000)
+anova(UnhealthyRepNull, UnhealthyRepMod3) # p = 0.04398327
+
+
+############################################################################
+#Repeat analysis with subset excluding repeat reporters
+############################################################################
+#read in dataframe
+Reports2 <- read.csv("TransectReportsNoDup.csv")
+head(Reports2)
+
+#clean data
+Reports2 <- Reports2 %>%
+  dplyr::filter(Name != " ")
+Reports2 <- Reports2%>%
+  dplyr::select(HumanActiv, CoyoteResp, HumanPerce,
+                Health, Name)
+
+#Create data frames containing the count of each response variable: 
+#response variable = Total Number of Reports
+TotalReports2 <- Reports2 %>%
+  group_by(Name) %>%
+  summarise(n())
+TotalReports2
+
+#response variable = Human context (will use this to develop count of Reports in Home/ Yard)
+Activity2 <- Reports2 %>%
+  group_by(Name, HumanActiv) %>%
+  summarise(n())
+Activity2 <- dcast(Activity2, Name ~ HumanActiv, fun.aggregate = sum)
+Activity2
+
+#response variable = coyote behaviour (will use this to develop count of conflict reports)
+CoyResp2 <- Reports2 %>%
+  group_by(Name, CoyoteResp) %>%
+  summarise(n())
+CoyResp2 <- dcast(CoyResp2, Name ~ CoyoteResp, fun.aggregate = sum)
+CoyResp2
+
+#Response variable = Human perception (will use this to develop number of negative perception reports)
+HumanPerc2 <- Reports2 %>%
+  group_by(Name, HumanPerce) %>%
+  summarise(n())
+HumanPerc2 <- dcast(HumanPerc2, Name ~ HumanPerce, fun.aggregate = sum)
+HumanPerc2
+
+#Response variable = Coyote health (will use this to develop number of unhealthy animal reports)
+CoyHealth2 <- Reports2 %>%
+  group_by(Name, Health) %>%
+  summarise(n())
+CoyHealth2 <- dcast(CoyHealth2, Name ~ Health, fun.aggregate = sum)
+CoyHealth2
+
+#join data into one dataframe
+ReportSumm2 <- TotalReports2 %>%
+  full_join(Area, by= "Name") %>%
+  full_join(Activity2, by = "Name") %>%
+  full_join(CoyResp2, by = "Name") %>%
+  full_join(HumanPerc2, by = "Name") %>%
+  full_join(CoyHealth2, by = "Name")
+
+str(ReportSumm2)
+#rename columns
+ReportSumm2 <- ReportSumm2 %>%
+  rename("TotalReports" = "n()") %>%
+  rename("Resp0" = "0") %>%
+  rename("Resp1" = "1") %>%
+  rename("Resp2" = "2") %>%
+  rename("Resp3" = "3") %>%
+  rename("Resp4" = "4") %>%
+  rename("Resp5" = "5") %>%
+  rename("Resp6" = "6") %>%
+  rename("Resp7" = "7") %>%
+  rename("Resp8" = "8") %>%
+  rename("Resp9" = "9")
+
+#create new variables
+ReportSumm2 <- ReportSumm2 %>%
+  mutate(ReportsPerArea = TotalReports / Area,
+         KnownAct = Cycling + Driving + HomeYard + OutdoorAct,
+         YardPerArea = HomeYard / Area,
+         KnownResp = Resp0 + Resp1 + Resp2 + Resp3 + Resp4 + Resp5 + Resp6 + Resp7 + Resp8 + Resp9,
+         Conflict = Resp6 + Resp7 + Resp8 + Resp9,
+         ConflictPerArea = Conflict / Area,
+         KnownPerc = Concern + Negative + Neutral + Positive,
+         NegPerc = Concern + Negative,
+         NegativePerArea = NegPerc / Area,
+         KnownHealth = Dead + Healthy + Unhealthy,
+         NotHealthy = Dead + Unhealthy,
+         UnhealthPerArea = NotHealthy / Area)
+
+#remove irrelevant variables
+ReportSumm2 <- ReportSumm2%>%
+  dplyr::select(Name,
+                TotalReports,
+                HomeYard,
+                Conflict,
+                NegPerc,
+                NotHealthy,
+                ReportsPerArea,
+                ConflictPerArea,
+                NegativePerArea,
+                UnhealthPerArea,
+                YardPerArea,
+                Area)
+
+#Combine transect data and reports data in one dataframe
+CombData <- ReportsData %>%
+  dplyr::select(Name, PercAccess, PercFenc, ShelterPerKM, CuriosityPerKM,
+                foodPerKM, DeerPres, SpreyhabPerKM, SPercAccess, SPercFenc,
+                SfoodperKM, SShelterPerKM, SCuriosityPerKM, preyhabPerKM)
+
+ReportsData2 <- CombData%>%
+  full_join(ReportSumm2, by = "Name")
+ReportsData2
+
+#determine count of each response variable
+sum(ReportsData2$TotalReports) # 411
+
+sum(ReportsData2$HomeYard) # 86
+sum(ReportsData2$HomeYard) / 411 # 20.9%
+
+sum(ReportsData2$Conflict) # 67
+sum(ReportsData2$Conflict) / 411 #16.3%
+
+sum(ReportsData2$NegPerc) # 32
+sum(ReportsData2$NegPerc) / 411 #7.8%
+
+sum(ReportsData2$NotHealthy) # 30
+sum(ReportsData2$NotHealthy) / 411 #7.3%
+
+###Begin modelling
+##Response variable = total reports
+# Develop Global Model
+TotRepPmod1.2<-glm(TotalReports~ PercAccess + PercFenc  + ShelterPerKM +  
+                     CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                   offset = log(Area), data = ReportsData2, family = poisson)
+
+#Develop global model using NB distribution
+TotRepNBmod1.2<-glm.nb(TotalReports~ PercAccess + PercFenc  + ShelterPerKM +  
+                         CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                         offset(log(Area)), data = ReportsData2, maxit = 100)
+
+#Create univariate models
+TotRepMod7.2 <- glm.nb(TotalReports~DeerPres +offset(log(Area)), data = ReportsData2)
+TotRepMod3.2 <- glm.nb(TotalReports~ShelterPerKM +offset(log(Area)), data = ReportsData2)
+
+#get beta coefficient, p values, confidence intervals
+STotRepMod3.2 <- glm.nb(TotalReports~SShelterPerKM +offset(log(Area)), data = ReportsData2)
+
+summ(TotRepMod7.2, digits = 4, confint = TRUE)
+summ(STotRepMod3.2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(TotRepMod7.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(TotRepMod3.2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(TotRepMod7.2, which = "Nagelkerke") #0.08844468 
+PseudoR2(TotRepMod7.2, which = "McFadden") #0.01275991 
+
+PseudoR2(TotRepMod3.2, which = "Nagelkerke") #0.2169101  
+PseudoR2(TotRepMod3.2, which = "McFadden") #0.03368906  
+
+#Create null and compare to null
+TotRepNull.2 <- glm.nb(TotalReports~1 +offset(log(Area)), data = ReportsData2)
+anova(TotRepNull.2, TotRepMod7.2) # p = 0.2236889
+anova(TotRepNull.2, TotRepMod3.2) # p = 0.04802865
+
+
+##Response variable = reports in home/ yard
+# Develop Global Model
+YardRepPMod.2<-glm(HomeYard~ PercAccess + PercFenc  + ShelterPerKM +  
+                     CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres,
+                   offset = log(Area), data = ReportsData2, family = poisson)
+
+YardRepPMod.2<-glm.nb(HomeYard ~ PercAccess + PercFenc  + ShelterPerKM +  
+                     CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres +
+                   offset(log(Area)), data = ReportsData2, maxit = 200)
+
+
+#Creat univariate models
+YardRepMod1.2 <- glm.nb(HomeYard~PercAccess +offset(log(Area)), data = ReportsData2)
+YardRepMod2.2 <- glm.nb(HomeYard~PercFenc +offset(log(Area)), data = ReportsData2)
+YardRepMod5.2 <- glm.nb(HomeYard~preyhabPerKM +offset(log(Area)), data = ReportsData2)
+YardRepMod7.2 <- glm.nb(HomeYard~DeerPres +offset(log(Area)), data = ReportsData2)
+
+#get beta coefficient, p values, confidence intervals
+S.YardRepMod1.2 <- glm.nb(HomeYard~SPercAccess +offset(log(Area)), data = ReportsData2)
+S.YardRepMod2.2 <- glm.nb(HomeYard~SPercFenc +offset(log(Area)), data = ReportsData2)
+S.YardRepMod5.2 <- glm.nb(HomeYard~SpreyhabPerKM +offset(log(Area)), data = ReportsData2)
+
+summ(S.YardRepMod5.2, digits = 4, confint = TRUE)
+summ(S.YardRepMod1.2, digits = 4, confint = TRUE)
+summ(YardRepMod7.2, digits = 4, confint = TRUE)
+summ(S.YardRepMod2.2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(YardRepMod5.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(YardRepMod1.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(YardRepMod7.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(YardRepMod2.2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(YardRepMod5.2, which = "Nagelkerke") #0.09642781    
+PseudoR2(YardRepMod1.2, which = "Nagelkerke") #0.02044142   
+PseudoR2(YardRepMod7.2, which = "Nagelkerke") #0.06564016    
+PseudoR2(YardRepMod2.2, which = "Nagelkerke") #0.01336829    
+
+PseudoR2(YardRepMod5.2, which = "McFadden") #0.02246871     
+PseudoR2(YardRepMod1.2, which = "McFadden") #0.004578708     
+PseudoR2(YardRepMod7.2, which = "McFadden") #0.0150474     
+PseudoR2(YardRepMod2.2, which = "McFadden") #0.002983789     
+
+#Create null and compare to null
+YardRepNull.2 <- glm.nb(HomeYard~1 +offset(log(Area)), data = ReportsData2)
+anova(YardRepNull.2, YardRepMod5.2) # p = 0.2055328
+anova(YardRepNull.2, YardRepMod1.2) # p = 0.5676777
+anova(YardRepNull.2, YardRepMod7.2) # p = 0.3002057
+anova(YardRepNull.2, YardRepMod2.2) # p = 0.6445633
+
+
+
+##Response variable = Conflict reports
+# Develop Global Model
+ConfRepPMod.2<-glm(Conflict~ PercAccess + PercFenc  + ShelterPerKM +  
+                     CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres,
+                   offset = log(Area), data = ReportsData2, family = poisson)
+
+#create global model using negative binomial distribution
+ConfRepNBMod.2 <- glm.nb(Conflict~ PercAccess + PercFenc  + ShelterPerKM +  
+                           CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                           offset(log(Area)), data = ReportsData2, maxit = 200)
+
+#Creat univariate models for each variable
+ConfRepMod1.2 <- glm.nb(Conflict~PercAccess +offset(log(Area)), data = ReportsData2)
+ConfRepMod2.2 <- glm.nb(Conflict~PercFenc +offset(log(Area)), data = ReportsData2)
+ConfRepMod3.2 <- glm.nb(Conflict~ShelterPerKM +offset(log(Area)), data = ReportsData2)
+
+#get beta coefficient, p values, confidence intervals
+S.ConfRepMod1.2 <- glm.nb(Conflict~SPercAccess +offset(log(Area)), data = ReportsData2)
+S.ConfRepMod2.2 <- glm.nb(Conflict~SPercFenc +offset(log(Area)), data = ReportsData2)
+S.ConfRepMod3.2 <- glm.nb(Conflict~SShelterPerKM +offset(log(Area)), data = ReportsData2)
+
+summ(S.ConfRepMod3.2, digits = 4, confint = TRUE)
+summ(S.ConfRepMod1.2, digits = 4, confint = TRUE)
+summ(S.ConfRepMod2.2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(ConfRepMod3.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(ConfRepMod1.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(ConfRepMod2.2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(ConfRepMod3.2, which = "Nagelkerke") #0.2879597    
+PseudoR2(ConfRepMod1.2, which = "Nagelkerke") #0.2466712    
+PseudoR2(ConfRepMod2.2, which = "Nagelkerke") #0.2454549    
+
+PseudoR2(ConfRepMod3.2, which = "McFadden") #0.06904132    
+PseudoR2(ConfRepMod1.2, which = "McFadden") #0.05759772    
+PseudoR2(ConfRepMod2.2, which = "McFadden") #0.0572701    
+
+#Create null and compare to null
+ConfRepNull.2 <- glm.nb(Conflict~1 +offset(log(Area)), data = ReportsData2)
+anova(ConfRepNull.2, ConfRepMod3.2) # p = 0.02031553
+anova(ConfRepNull.2, ConfRepMod1.2) # p = 0.03405218
+anova(ConfRepNull.2, ConfRepMod2.2) # p = 0.0345651
+
+
+
+##Response variable = Negative Perception reports
+# Develop Global Model
+NegPercPMod.2<-glm(NegPerc~ PercAccess + PercFenc  + ShelterPerKM +  
+                     CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                   offset = log(Area), data = ReportsData2, family = poisson)
+
+#develop global model using negative binomial distribution
+NegPercNBMod.2 <- glm.nb(NegPerc~ PercAccess + PercFenc  + ShelterPerKM +  
+                           CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres +
+                           offset(log(Area)), data = ReportsData2, maxit = 200)
+
+NegPercRepMod1.2 <- glm.nb(NegPerc~PercAccess +offset(log(Area)), data = ReportsData2, maxit = 100)
+NegPercRepMod2.2 <- glm.nb(NegPerc~PercFenc +offset(log(Area)), data = ReportsData2)
+NegPercRepMod4.2 <- glm.nb(NegPerc~CuriosityPerKM +offset(log(Area)), data = ReportsData2)
+NegPercRepMod5.2 <- glm.nb(NegPerc~preyhabPerKM +offset(log(Area)), data = ReportsData2, maxit = 100)
+NegPercRepMod3.2 <- glm.nb(NegPerc~ShelterPerKM +offset(log(Area)), data = ReportsData2)
+
+#get beta coefficient, p values, confidence intervals
+S.NegPercRepMod1.2 <- glm.nb(NegPerc~SPercAccess +offset(log(Area)), data = ReportsData2, maxit = 100)
+S.NegPercRepMod2.2 <- glm.nb(NegPerc~SPercFenc +offset(log(Area)), data = ReportsData2)
+S.NegPercRepMod4.2 <- glm.nb(NegPerc~SCuriosityPerKM +offset(log(Area)), data = ReportsData2)
+S.NegPercRepMod5.2 <- glm.nb(NegPerc~SpreyhabPerKM +offset(log(Area)), data = ReportsData2, maxit = 100)
+S.NegPercRepMod3.2 <- glm.nb(NegPerc~SShelterPerKM +offset(log(Area)), data = ReportsData2)
+
+summ(S.NegPercRepMod4.2, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod2.2, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod1.2, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod5.2, digits = 4, confint = TRUE)
+summ(S.NegPercRepMod3.2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(NegPercRepMod4.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod2.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod1.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod5.2, digits = 4, confint = TRUE, exp = TRUE)
+summ(NegPercRepMod3.2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(NegPercRepMod4.2, which = "Nagelkerke") #0.1595009      
+PseudoR2(NegPercRepMod2.2, which = "Nagelkerke") #0.1337167      
+PseudoR2(NegPercRepMod1.2, which = "Nagelkerke") #0.1157455      
+PseudoR2(NegPercRepMod5.2, which = "Nagelkerke") #0.09820277      
+PseudoR2(NegPercRepMod3.2, which = "Nagelkerke") #0.08815361      
+
+PseudoR2(NegPercRepMod4.2, which = "McFadden") #0.04659573       
+PseudoR2(NegPercRepMod2.2, which = "McFadden") #0.03851016      
+PseudoR2(NegPercRepMod1.2, which = "McFadden") #0.03301143       
+PseudoR2(NegPercRepMod5.2, which = "McFadden") #0.02774734       
+PseudoR2(NegPercRepMod3.2, which = "McFadden") #0.02477646       
+
+#Create null and compare to null
+NegPercRepNull.2 <- glm.nb(NegPerc~1 +offset(log(Area)), data = ReportsData2)
+anova(NegPercRepNull.2, NegPercRepMod2.2) # p = 0.1352921
+anova(NegPercRepNull.2, NegPercRepMod1.2) # p = 0.1667202
+anova(NegPercRepNull.2, NegPercRepMod5.2) # p = 0.3285892
+anova(NegPercRepNull.2, NegPercRepMod6.2) # p = 0.1978506
+anova(NegPercRepNull.2, NegPercRepMod4.2) # p = 0.3243439
+
+
+##Response variable = Reports of Unhealthy Animals
+# Develop Global Model
+UnhealthyPMod.2<-glm(NotHealthy~ PercAccess + PercFenc  + ShelterPerKM +  
+                       CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres, 
+                     offset = log(Area), data = ReportsData2, family = poisson)
+
+# Develop Global Model using NB distribution
+UnhealthyNBMod.2<-glm.nb(NotHealthy~ PercAccess + PercFenc  + ShelterPerKM +  
+                           CuriosityPerKM + preyhabPerKM + foodPerKM + DeerPres + 
+                           offset(log(Area)), data = ReportsData2, maxit = 1000)
+
+UnhealthyRepMod3.2 <- glm.nb(NotHealthy~ShelterPerKM + offset(log(Area)), data = ReportsData2, maxit = 100)
+
+#get beta coefficient, p values, confidence intervals
+S.UnhealthyRepMod3.2 <- glm.nb(NotHealthy~SShelterPerKM + offset(log(Area)), data = ReportsData2, maxit = 100)
+summ(S.UnhealthyRepMod3.2, digits = 4, confint = TRUE)
+
+#Get rate ratio and confidence intervals
+summ(UnhealthyRepMod3.2, digits = 4, confint = TRUE, exp = TRUE)
+
+#Get pseudo r2 values
+PseudoR2(UnhealthyRepMod3.2, which = "Nagelkerke") #0.2094616       
+PseudoR2(UnhealthyRepMod3.2, which = "McFadden") #0.07166674   
+
+#Create null and compare to null
+UnhealthyRepNull.2 <- glm.nb(NotHealthy~1 +offset(log(Area)), data = ReportsData2, maxit = 100)
+anova(UnhealthyRepNull.2, UnhealthyRepMod3.2) # p = 0.05869239
+
+
+############################################################################
+#Address human demographic variables
+############################################################################
+#Read in data
+Socio <- read.csv("TransForSocio.csv")
+
+#Create apporpriate variables
+Socio <- Socio %>%
+  mutate(PercRetire = propRetire * 100) %>%
+  mutate(PercUniv = propUniv * 100)
+
+Socio <- Socio %>%
+  dplyr::filter(TransectName != "BROOKSIDE") %>%
+  dplyr::filter(TransectName != "BROOKSIDE2") %>%
+  dplyr::select(TransectName, LengthKM, TotalHouses, YardsWithCALAAccess, Scat,
+                food, PercRetire, PercUniv, Mean_HouseSize)
+
+#Make scale/ centered variables, which will facilitate summary of glm.nb objects
+Socio$SPercUniv <- scale(Socio$PercUniv, scale = TRUE, center = TRUE)
+Socio$SPercRetire <- scale(Socio$PercRetire, scale = TRUE, center = TRUE)
+Socio$SMean_HouseSize <- scale(Socio$Mean_HouseSize, scale = TRUE, center = TRUE)
+
+#response variable = food
+#create global model to assess overdispersion
+food1 <- glm(food~PercUniv, offset = log(TotalHouses), family = poisson, data = Socio)
+#check overdisperion
+check_overdispersion(food1) #dispersion ratio = 6.104, p < 0.001, OD detected
+
+#Create negative binomial models for each predictor variable
+FoodUniv <- glm.nb(food~PercUniv+ offset(log(TotalHouses)),data = Socio)
+FoodRetire <- glm.nb(food~PercRetire+ offset(log(TotalHouses)),data = Socio)
+FoodWealth <- glm.nb(food~Mean_HouseSize+ offset(log(TotalHouses)),data = Socio)
+
+#get beta coefficients, p values, confidence intervals
+SFoodUniv <- glm.nb(food~SPercUniv+ offset(log(TotalHouses)),data = Socio)
+SFoodRetire <- glm.nb(food~SPercRetire+ offset(log(TotalHouses)),data = Socio)
+SFoodWealth <- glm.nb(food~SMean_HouseSize+ offset(log(TotalHouses)),data = Socio)
+
+summ(SFoodUniv, digits = 4, confint = TRUE)
+summ(SFoodRetire, digits = 4, confint = TRUE)
+summ(SFoodWealth, digits = 4, confint = TRUE)
+
+#get rate ratios + confidence intervals
+summ(FoodUniv, digits = 4, confint = TRUE, exp = TRUE)
+summ(FoodRetire, digits = 4, confint = TRUE, exp = TRUE)
+summ(FoodWealth, digits = 4, confint = TRUE, exp = TRUE)
+
+#Create null and compare to null
+FoodNull <- glm.nb(food~1+ offset(log(TotalHouses)),data = Socio)
+anova(FoodNull, FoodUniv) # p = 0.1987517
+anova(FoodNull, FoodRetire) # p = 0.2224117
+anova(FoodNull, FoodWealth) # p = 0.3124237
+
+#get pseudo rsq values
+PseudoR2(FoodUniv, which = "Nagelkerke") #0.08771759 
+PseudoR2(FoodRetire, which = "Nagelkerke") #0.0794249 
+PseudoR2(FoodWealth, which = "Nagelkerke") #0.05514329 
+
+PseudoR2(FoodUniv, which = "McFadden") #0.01226923  
+PseudoR2(FoodRetire, which = "McFadden") #0.01105992  
+PseudoR2(FoodWealth, which = "McFadden") #0.007580602  
+
+
+#response variable = Access
+#create model to assess overdispersion
+Acc1 <- glm(YardsWithCALAAccess~PercUniv, offset = log(TotalHouses), family = poisson, data = Socio)
+#check overdisperion
+check_overdispersion(Acc1) #dispersion ratio = 2.513, p < 0.001, OD detected
+
+#Create negative binomial models for each predictor variable
+AccUniv <- glm.nb(YardsWithCALAAccess~PercUniv+ offset(log(TotalHouses)),data = Socio)
+AccRetire <- glm.nb(YardsWithCALAAccess~PercRetire+ offset(log(TotalHouses)),data = Socio)
+AccWealth <- glm.nb(YardsWithCALAAccess~Mean_HouseSize+ offset(log(TotalHouses)),data = Socio)
+
+#get beta coefficients, p values, confidence intervals
+SAccUniv <- glm.nb(YardsWithCALAAccess~SPercUniv+ offset(log(TotalHouses)),data = Socio)
+SAccRetire <- glm.nb(YardsWithCALAAccess~SPercRetire+ offset(log(TotalHouses)),data = Socio)
+SAccWealth <- glm.nb(YardsWithCALAAccess~SMean_HouseSize+ offset(log(TotalHouses)),data = Socio)
+
+summ(SAccUniv, digits = 4, confint = TRUE)
+summ(SAccRetire, digits = 4, confint = TRUE)
+summ(SAccWealth, digits = 4, confint = TRUE)
+
+#get rate ratios + confidence intervals
+summ(AccUniv, digits = 4, confint = TRUE, exp = TRUE)
+summ(AccRetire, digits = 4, confint = TRUE, exp = TRUE)
+summ(AccWealth, digits = 4, confint = TRUE, exp = TRUE)
+
+#Create null and compare to null
+AccNull <- glm.nb(YardsWithCALAAccess~1+ offset(log(TotalHouses)),data = Socio)
+anova(AccNull, AccUniv) # p = 0.311469
+anova(AccNull, AccRetire) # p = 0.1280579
+anova(AccNull, AccWealth) # p = 0.09452494
+
+#get pseudo rsq values
+PseudoR2(AccUniv, which = "Nagelkerke") #0.05548811  
+PseudoR2(AccRetire, which = "Nagelkerke") #0.1210861  
+PseudoR2(AccWealth, which = "Nagelkerke") #0.144277  
+
+PseudoR2(AccUniv, which = "McFadden") #0.009774375   
+PseudoR2(AccRetire, which = "McFadden") #0.02209643   
+PseudoR2(AccWealth, which = "McFadden") #0.02667318  
+
+
+#response variable = Scat
+#create model to assess overdispersion
+Scat1 <- glm(Scat~PercUniv, offset = log(LengthKM), family = poisson, data = Socio)
+#check overdisperion
+check_overdispersion(Scat1) #dispersion ratio = 6.256, p < 0.001, OD detected
+
+#Create negative binomial models for each predictor variable
+ScatUniv <- glm.nb(Scat~PercUniv+ offset(log(LengthKM)),data = Socio)
+ScatRetire <- glm.nb(Scat~PercRetire+ offset(log(LengthKM)),data = Socio)
+ScatWealth <- glm.nb(Scat~Mean_HouseSize+ offset(log(LengthKM)),data = Socio)
+
+#get beta coefficients, p values, confidence intervals
+SScatUniv <- glm.nb(Scat~SPercUniv+ offset(log(LengthKM)),data = Socio)
+SScatRetire <- glm.nb(Scat~SPercRetire+ offset(log(LengthKM)),data = Socio)
+SScatWealth <- glm.nb(Scat~SMean_HouseSize+ offset(log(LengthKM)),data = Socio)
+
+summ(SScatUniv, digits = 4, confint = TRUE)
+summ(SScatRetire, digits = 4, confint = TRUE)
+summ(SScatWealth, digits = 4, confint = TRUE)
+
+#get rate ratios + confidence intervals
+summ(ScatUniv, digits = 4, confint = TRUE, exp = TRUE)
+summ(ScatRetire, digits = 4, confint = TRUE, exp = TRUE)
+summ(ScatWealth, digits = 4, confint = TRUE, exp = TRUE)
+
+#Create null and compare to null
+ScatNull <- glm.nb(Scat~1+ offset(log(LengthKM)),data = Socio)
+anova(ScatNull, ScatUniv) # p = 0.02969425
+anova(ScatNull, ScatRetire) # p = 0.841188
+anova(ScatNull, ScatWealth) # p = 0.1617158
+
+#get pseudo rsq values
+PseudoR2(ScatUniv, which = "Nagelkerke") #0.2313554   
+PseudoR2(ScatRetire, which = "Nagelkerke") #0.00223192   
+PseudoR2(ScatWealth, which = "Nagelkerke") #0.1032543    
+
+PseudoR2(ScatUniv, which = "McFadden") #0.04129346     
+PseudoR2(ScatRetire, which = "McFadden") #0.0003507419    
+PseudoR2(ScatWealth, which = "McFadden") #0.0171057     
+
+
+############################################################################
+#Create Figure 1
+############################################################################
+#read in data for bar chart
+BCShelter2 <- read.csv("BCShelter2.csv")
+BCFence2 <- read.csv("BCFence2.csv")
+BCPrey2 <- read.csv("BCPrey2.csv")
+BCFood2 <- read.csv("BCFood2.csv")
+BCNovelty2 <- read.csv("BCNovelty2.csv")
+
+#Create plot for fences
+FenceBarPlot2 <- ggplot(data = BCFence2, mapping = aes(x = Attractant, y = Detections)) +
+  geom_bar(stat = "identity", colour = "black", fill = "#d11141") +
+  theme_bw() +
+  geom_text(aes(label=Percent), vjust=0.4, hjust = -0.2, color="black", size=4.5) +
+  scale_x_discrete(limits = c("Open gate", "Partial fence", "Broken fence", "No fence")) +
+  scale_y_continuous(limits = c(0,140)) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  labs(x="Fence", y="Detections (count)") + coord_flip()
+FenceBarPlot2
+
+#Create plot for shelter
+ShelterBarPlot2 <- ggplot(data = BCShelter2, mapping = aes(x = Attractant, y = Detections)) +
+  geom_bar(stat = "identity", colour = "black", fill = "#f37735") +
+  theme_bw() +
+  geom_text(aes(label=Percent), vjust=0.4, hjust = -0.6, color="black", size=4.5) +
+  scale_x_discrete(limits = c("Deck", "Building")) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  labs(x="Shelter", y="Detections (count)") + coord_flip()
+ShelterBarPlot2
+
+#Create plot for food
+FoodBarPlot2 <- ggplot(data = BCFood2, mapping = aes(x = Attractant, y = Detections)) +
+  geom_bar(stat = "identity", colour = "black", fill = "#ffc425") +
+  theme_bw() +
+  geom_text(aes(label=Percent), vjust=0.4, hjust = -0.1, color="black", size=4.5) +
+  scale_x_discrete(limits = c("Trash", "Ground seed", "Pumpkin", "Compost", "Bird feeder")) +
+  scale_y_continuous(limits = c(0,260)) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  labs(x="Food", y="Detections (count)") + coord_flip()
+FoodBarPlot2
+
+#Create plot for prey habitat
+PreyBarPlot2 <- ggplot(data = BCPrey2, mapping = aes(x = Attractant, y = Detections)) +
+  geom_bar(stat = "identity", colour = "black", fill = "#00b159") +
+  theme_bw() +
+  geom_text(aes(label=Percent), vjust=0.4, hjust = -0.075, color="black", size=4.5) +
+  scale_x_discrete(limits = c("Rock pile", "Rock wall", "Construction debris", "Bricks", "Grass clippings", "Concrete", "Christmas tree", "Lumber", "Leaf pile", "Wood rounds", "Wood stack", "Branches")) +
+  scale_y_continuous(limits = c(0,550)) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  labs(x="Prey habitat", y="Detections (count)") + coord_flip()
+PreyBarPlot2
+
+#Create plot for novelty objects
+NoveltyBarPlot2 <- ggplot(data = BCNovelty2, mapping = aes(x = Attractant, y = Detections)) +
+  geom_bar(stat = "identity", colour = "black", fill = "#00aedb") +
+  theme_bw() +
+  geom_text(aes(label=Percent), vjust=0.4, hjust = -0.2, color="black", size=4.5) +
+  scale_x_discrete(limits = c("Chewed metal", "Chewed litter", "Litter items")) +
+  scale_y_continuous(limits = c(0,310)) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none") +
+  labs(x="Novelty objects", y="Detections (count)") + coord_flip() 
+NoveltyBarPlot2
+
+#Combine the five panels into one
+BigChart <- ggarrange(FenceBarPlot2, ShelterBarPlot2, FoodBarPlot2, PreyBarPlot2, NoveltyBarPlot2, ncol = 1, align="v",
+                      heights = c(0.9,0.5,1,2,0.8))
+
+#Save final chart
+#ggsave(BigChart, file = "BigChart.png", dpi = 300, height = 10, width = 7.5)
+
+
+############################################################################
+#Create Figure 2
+############################################################################
+#Load all photos
+Pic1 <- image_read("Pic1.jpg")
+Pic2 <- image_read("Pic2.jpg")
+Pic3 <- image_read("Pic3.jpg")
+
+#get info for images
+image_info(Pic1)
+image_info(Pic2)
+image_info(Pic3)
+
+#Pic1 needs to be rotated
+Pic1a <- image_rotate(Pic1, 90)
+image_info(Pic1a)
+
+#Annotate Pic1
+Pic1a <- image_annotate(Pic1a, text = "(a)", size = 150, color = "black", boxcolor = "white",
+                        gravity = "southeast", location = '+325+350', degree = 180)
+image_browse(Pic1a)
+
+#Annotate Pic2
+Pic2a <- image_annotate(Pic2, text = "(b)", size = 150, color = "black", boxcolor = "white",
+                        gravity = "northwest", location = '+150+250')
+image_browse(Pic2a)
+
+#Annotate Pic3
+Pic3a <- image_annotate(Pic3, text = "(c)", size = 150, color = "black", boxcolor = "white",
+                        gravity = "northwest", location = '+150+250')
+image_browse(Pic3a)
+
+#create one figure with three panels of photos
+img <- c(image_rotate(Pic1a, 180), Pic2a, Pic3a)
+PhotoFig <- image_append(img)
+image_browse(PhotoFig)
+
+#Save three-paneled photo figure
+#image_write(PhotoFig, path = "PhotoFigure.png", format = "png")
+
+
+############################################################################
+#Create Figure 3
+############################################################################
+#Panel a = barplot comparing attractant abundance in accessed vs. not accessed yards
+#Rearrange dataframe
+Access2 <- Access
+Access2$Access <- "Yes" #creates column that will determine colour in figure
+Access2$sd <- as.numeric(Access2$sd) #creates column containing sd
+Access2 <- Access2 %>%
+  mutate(se = sd/12.04159) #creates column containing se
+Access2 <- Access2 %>%
+  dplyr::select("variable", "mean", "se", "Access") #removes unnecessary columns
+
+#Repeat for yards that were not accessed
+NoAccess2 <- NoAccess
+NoAccess2$Access <- "No"
+NoAccess2$sd <- as.numeric(NoAccess2$sd)
+NoAccess2 <- NoAccess2 %>%
+  mutate(se = sd/17.9722)
+NoAccess2 <- NoAccess2 %>%
+  dplyr::select("variable", "mean", "se", "Access")
+
+#Create dataframe that will facilitate creation of chart
+ChartData <- rbind(Access2,NoAccess2)
+ChartData$mean <- as.numeric(ChartData$mean) #change mean to numeric
+ChartData$Access <- factor(ChartData$Access, levels = c('Yes', 'No')) #change to factor
+
+#Create preliminary Chart
+Chart1 <- ggplot(ChartData, aes(x = factor(variable), y = mean, fill = Access)) + 
+  geom_bar(stat = "identity", color = "black",
+           position = position_dodge()) +
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width = .2,
+                position = position_dodge(0.9)) +
+  labs(x="Type of attractant", y="Average count per yard") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  scale_fill_manual(values = c("#d11141", "#00aedb")) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.x=element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y=element_text(colour = "black", face = "plain", size = 12),
+        legend.text = element_text(colour = "black", face = "plain", size = 12),
+        legend.title = element_text(colour = "black", face = "plain", size = 12))
+Chart1
+
+legend <- cowplot::get_legend(Chart1)
+grid.newpage()
+grid.draw(legend)
+
+
+Chart1a <- Chart1 + theme(legend.position = "none")
+
+#refine chart labels and order of attractants
+Chart2 <- Chart1a + scale_x_discrete(limits = c("Shelter", "food", "preyhab", "Curiosity"),
+                                    labels = c("Shelter" = "Shelter", "food" = "Food",
+                                               "preyhab" = "Prey\nhabitat", "Curiosity" = "Novelty\nobject"))
+Chart2 
+
+#Panel b = barplot comparing attractant abundance in accessed vs. not accessed yards, for unfenced yards ONLY
+YardSumm5 <- YardSumm %>%
+  dplyr::select(Shelter,
+                Curiosity,
+                preyhab,
+                food,
+                Access,
+                IntactFence)
+FenceAccess <- YardSumm5 %>%
+  dplyr::filter(IntactFence == "N")
+FenceAccessY <- FenceAccess %>%
+  dplyr::filter(Access == 1)
+FenceAccessN <- FenceAccess %>%
+  dplyr::filter(Access == 0)
+
+#caluclate mean for all attractants in accessed vs. not accessed UNFENCED yards
+mean1 <- c((mean(FenceAccessY$Shelter)), (mean(FenceAccessY$Curiosity)), (mean(FenceAccessY$preyhab)), (mean(FenceAccessY$food)))
+mean2 <- c((mean(FenceAccessN$Shelter)), (mean(FenceAccessN$Curiosity)), (mean(FenceAccessN$preyhab)), (mean(FenceAccessN$food)))
+
+#caluclate sd for all attractants in accessed vs. not accessed UNFENCED yards
+sd1 <- c((sd(FenceAccessY$Shelter)), (sd(FenceAccessY$Curiosity)), (sd(FenceAccessY$preyhab)), (sd(FenceAccessY$food)))
+sd2 <- c((sd(FenceAccessN$Shelter)), (sd(FenceAccessN$Curiosity)), (sd(FenceAccessN$preyhab)), (sd(FenceAccessN$food)))
+
+#Create a vector of headings
+Variable1 <- c("Shelter", "Curiosity", "preyhab", "food")
+
+#Summary table for accessed yards (unfenced yards only)
+AccessNoFence <- data.frame(Variable1, mean1, sd1)
+AccessNoFence$se <- AccessNoFence$sd1 / 12.04159
+AccessNoFence$Access <- "Yes"
+AccessNoFence <- AccessNoFence %>%
+  rename("Variable" = Variable1,
+         "mean" = mean1)%>%
+  dplyr::select(-(sd1))
+
+#Summary table for yards that weren't accessed (unfenced yards only)
+NoAccessNoFence <- data.frame(Variable1, mean2, sd2)
+NoAccessNoFence$se <- NoAccessNoFence$sd2 / 3.162278
+NoAccessNoFence$Access <- "No"
+NoAccessNoFence <- NoAccessNoFence %>%
+  rename("Variable" = Variable1,
+         "mean" = mean2)%>%
+  dplyr::select(-(sd2))
+
+#Create dataframe from summaries for accessed and non accessed unfenced yards
+FenceAccessChartData <- rbind(AccessNoFence, NoAccessNoFence)
+FenceAccessChartData$Access <- factor(FenceAccessChartData$Access, levels = c("Yes", "No"))
+
+#Create preliminary chart
+Chart1.a <- ggplot(FenceAccessChartData, aes(x = factor(Variable), y = mean, fill = Access)) + 
+  geom_bar(stat = "identity", color = "black",
+           position = position_dodge()) +
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width = .2,
+                position = position_dodge(0.9)) +
+  labs(x="Type of attractant", y="Average count per yard") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(legend.position = c(0.13, 0.68)) +
+  scale_fill_manual(values = c("#d11141", "#00aedb")) +
+  theme(axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.x=element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y=element_text(colour = "black", face = "plain", size = 12),
+        legend.text = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none")
+Chart1.a
+
+#refine chart labels and order of attractants
+Chart2.a <- Chart1.a + scale_x_discrete(limits = c("Shelter", "food", "preyhab", "Curiosity"),
+                                        labels = c("Shelter" = "Shelter", "food" = "Food",
+                                                   "preyhab" = "Prey\nhabitat", "Curiosity" = "Novelty\nobject"))
+Chart2.a
+
+#Panel c = barplot comparing distance to nearest scat in accessed vs. not accessed yards
+#create dataframe containing distance to nearest scat for accessed and not-accessed yards
+ScatDistY <- subset(ScatDist, ScatDist$ACCESS == "Y") #df for accessed yards
+ScatDistN <- subset(ScatDist, ScatDist$ACCESS == "N") #df for not accessed yards
+
+VarAcc <- c("Y", "N")
+SampleSize <- c(145, 323)
+ScatMean <- c(mean(ScatDistY$Scat_Dist2), mean(ScatDistN$Scat_Dist2))
+Scatsd <- c(sd(ScatDistY$Scat_Dist2), mean(ScatDistN$Scat_Dist2))
+
+#Create dataframe containing relevant info
+ScatChartData <- data.frame(VarAcc, SampleSize, ScatMean, Scatsd)
+ScatChartData <- ScatChartData %>%
+  mutate(scatse = Scatsd / sqrt(SampleSize)) #calculate standard error
+ScatChartData$VarAcc <- factor(ScatChartData$VarAcc, levels = c('Y', 'N')) #code as type factor
+
+#Create Chart
+DistChart1 <- ggplot(ScatChartData, aes(x = factor(VarAcc), y = ScatMean, fill = VarAcc)) + 
+  geom_bar(stat = "identity", color = "black",
+           position = position_dodge()) +
+  geom_errorbar(aes(ymin=ScatMean-scatse, ymax=ScatMean+scatse), width = .2,
+                position = position_dodge(0.9)) +
+  labs(x="Access", y="Average distance to nearest scat (m)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(legend.position = c(0.25, 0.85)) +
+  scale_fill_manual(values = c("#d11141", "#00aedb")) +
+  theme(axis.text.x = element_text(colour = "white", face = "plain", size = 12),
+        axis.title.x=element_text(colour = "black", face = "plain", size = 12),
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.y=element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "none") 
+DistChart1
+
+#Create grobs that will label panels
+grob1 <- grobTree(textGrob("(a) All yards", x=0.05,  y=0.9, hjust=0,
+                           gp=gpar(col="black", fontsize=12, fontface="plain", size = 12)))
+grob1a <- grobTree(textGrob("*", x=0.13,  y=0.14, hjust=0,
+                           gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+grob1b <- grobTree(textGrob("*", x=0.37,  y=0.43, hjust=0,
+                            gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+grob1c <- grobTree(textGrob("***", x=0.57,  y=0.96, hjust=0,
+                            gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+grob1d <- grobTree(textGrob("*", x=0.85,  y=0.14, hjust=0,
+                            gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+
+
+grob2 <- grobTree(textGrob("(b) Yards without\nintact fence", x=0.05,  y=0.9, hjust=0,
+                           gp=gpar(col="black", fontsize=12, fontface="plain", size = 12)))
+grob2a <- grobTree(textGrob("***", x=0.37,  y=0.43, hjust=0,
+                           gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+grob2b <- grobTree(textGrob("**", x=0.85,  y=0.14, hjust=0,
+                           gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+
+
+grob3 <- grobTree(textGrob("(c)", x=0.05,  y=0.935, hjust=0,
+                           gp=gpar(col="black", fontsize=13, fontface="plain", size = 12)))
+grob3a <- grobTree(textGrob("***", x=0.44,  y=0.96, hjust=0,
+                           gp=gpar(col="black", fontsize=24, fontface="plain", size = 12)))
+
+
+
+
+#Add grobs to chart panels to label
+Chart2 <- Chart2 + annotation_custom(grob1) + annotation_custom(grob1a) + 
+  annotation_custom(grob1b) + annotation_custom(grob1c) + annotation_custom(grob1d)
+Chart2
+
+Chart2.a <- Chart2.a + annotation_custom(grob2) + annotation_custom(grob2a) + 
+  annotation_custom(grob2b)
+Chart2.a
+
+DistChart1 <- DistChart1 + annotation_custom(grob3) + annotation_custom(grob3a)
+DistChart1
+
+legend2 <- legend + annotation_custom(grob3)
+
+ggplot(mtcars, aes(x = wt, y = mpg)) + geom_blank()
+
+#Make legend for asterisk system
+AstChart1 <- ggplot(ScatChartData, aes(x = factor(VarAcc), y = ScatMean, fill = VarAcc)) +
+  geom_blank() + theme_bw() + theme_void()
+
+grob4 <- grobTree(textGrob("*** P < 0.001\n** 0.001 < P < 0.01\n* 0.01 < P < 0.05", 
+                           gp=gpar(col="black", fontsize=12, fontface="plain", size = 12)))
+
+AstChart1a <- AstChart1 + annotation_custom(grob4)
+ggsave(AstChart1a, dpi = 300, file = "AstLeg.png", bg = "white")
+legends <- ggarrange(legend, AstChart1a, ncol = 1, nrow = 2, align = "h", bg = "white")
+
+
+#Combine in single Chart
+Fig3 <- ggarrange(Chart2, legend, Chart2.a, DistChart1, nrow = 2, ncol = 2, align = "hv", widths = c(5,2))
+Fig3
+ggsave(Fig3, file = "Figure3Final.png", dpi = 300, height = 9, width = 7, bg = "white")
+
+
+############################################################################
+#Create Figure 4
+############################################################################
+#Make preliminary chart
+Plotsumms <- plot_summs(TotRepMod7, STotRepMod3,
+                        S.YardRepMod5, S.YardRepMod1, YardRepMod7, S.YardRepMod2, 
+                        S.ConfRepMod3, S.ConfRepMod1, S.ConfRepMod2, 
+                        S.NegPercRepMod4, S.NegPercRepMod2, S.NegPercRepMod1, 
+                        S.NegPercRepMod5, S.NegPercRepMod3,
+                        S.UnhealthyRepMod3,
+                        coefs = c("Accessed yards (%)" = "SPercAccess",
+                                  "Intact fence (%)" = "SPercFenc",
+                                  "Shelter/ km" = "SShelterPerKM",
+                                  "Prey habitat/ km" = "SpreyhabPerKM",
+                                  "Novelty objects/ km" = "SCuriosityPerKM",
+                                  "Deer present" = "DeerPresY"),
+                        point.shape = FALSE,
+                        legend.title = "Outcome Variable",
+                        colors = c("#d11141", "#d11141",
+                                   "#f37735", "#f37735", "#f37735", "#f37735",
+                                   "#ffc425", "#ffc425", "#ffc425",
+                                   "#00b159", "#00b159", "#00b159", "#00b159", "#00b159",
+                                   "#00aedb"),
+                        inner_ci_level = 0.75,
+                        model.names = c("Total reports", "d",
+                                        "Reports in yards", "a", "b", "c",
+                                        "Conflict reports", "e", "f",
+                                        "Negative perception\n reports", "i", "j", "k", "l",
+                                        "Unhealthy animal(s)"))
+Plotsumms
+
+#Improve plot
+Plotsumm2 <- Plotsumms + 
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        axis.text.y = element_text(colour = "black", face = "plain", size = 12),
+        axis.text.x = element_text(colour = "black", face = "plain", size = 12),
+        axis.title.x=element_text(colour = "black", face = "plain", size = 12),
+        plot.title = element_blank()) +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  scale_shape_manual(values = c(24,21,21,21,21,21,22,22,22,25,25,25,25,23,23))
+Plotsumm2
+
+#Create preliminary plot to develop legend
+PlotsummsLeg <- plot_summs(TotRepMod7, 
+                           S.YardRepMod1,
+                           S.ConfRepMod3,
+                           S.NegPercRepMod2,
+                           S.UnhealthyRepMod3,
+                           coefs = c("Accessed yards (%)" = "SPercAccess",
+                                     "Intact fence (%)" = "SPercFenc",
+                                     "Shelter/ km" = "SShelterPerKM",
+                                     "Prey habitat/ km" = "SpreyhabPerKM",
+                                     "Novelty objects/ km" = "SCuriosityPerKM",
+                                     "Deer present" = "DeerPresY"),
+                           point.shape = FALSE,
+                           legend.title = "Response variable",
+                           colors = c("#d11141",
+                                      "#f37735",
+                                      "#ffc425",
+                                      "#00b159",
+                                      "#00aedb"),
+                           inner_ci_level = 0.75,
+                           model.names = c("Unhealthy animal(s)",
+                                           "Negative perception\n reports",
+                                           "Conflict reports",
+                                           "Reports in yards",
+                                           "Total reports"))
+PlotsummsLeg
+
+#Improve Legend plot
+PlotsummLeg2 <- PlotsummsLeg + 
+  theme(legend.text = element_text(colour = "black", face = "plain", size = 12),
+        legend.position = "right",
+        legend.title = element_text(colour = "black", face = "plain", size = 12)) +
+  scale_shape_manual(name = "Response variable", 
+                     values = c(23, 25, 22, 21, 24),
+                     breaks = c("Total reports", "Reports in yards", 
+                                "Conflict reports", "Negative perception\n reports",
+                                "Unhealthy animal(s)")) +
+  scale_colour_manual(name = "Response variable", 
+                      values = c("#d11141",
+                                 "#f37735",
+                                 "#ffc425",
+                                 "#00b159",
+                                 "#00aedb"),
+                      breaks = c("Total reports", "Reports in yards", 
+                                 "Conflict reports", "Negative perception\n reports",
+                                 "Unhealthy animal(s)"))
+
+PlotsummLeg2
+
+Fig4legend <- cowplot::get_legend(PlotsummLeg2)
+grid.newpage()
+grid.draw(Fig4legend)
+
+#Combine legend and plot 
+Fig4 <- ggarrange(Plotsumm2, Fig4legend, ncol = 2, widths = c(4.5,1.5))
+Fig4
+
+#Save to file
+ggsave(Fig4, file = "Figure4.png", dpi = 300, height = 4, width = 8, bg = "white")
+
